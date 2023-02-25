@@ -18,3 +18,4 @@ Current version: 1.1
 - added the Groove table (see ADVM.s)
 - changed the soundtest's bitmap to look more similar to the logo in ADVM.s
 - changed how the commands are fetched, it don't really matter to the song format, just reduces stack usage
+- fixed the music part stopping when an SFX was running instead of just muting (how did i not notice this)
