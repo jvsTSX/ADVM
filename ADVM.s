@@ -1,11 +1,11 @@
 ; ///////////////////////////////////////////////////////////////
-;	       ____________  __    ______    ____    __++++++__
-;	     /     |   __  \|  |  /  /   \  /    |  |  @       |
-;	    /  /|  |  |  \  \  | /  /     \/     |  |  ------  |
-;	   /  /_|  |  |   |  | |/  /|  |\    /|  |  | |      | |
-;	  /  ___   |  |   |  |    / |  | \  / |  |  | |      | |
-;	 /  /   |  |  |__/  /    /  |  |  \/  |  |  |  ------  |
-;	/__/    |__|_______/|___/   |__|      |__|  | _+_ o o  |
+;          ____________  __    ______    ____    __++++++__
+;        /     |   __  \|  |  /  /   \  /    |  |  @       |
+;       /  /|  |  |  \  \  | /  /     \/     |  |  ------  |
+;      /  /_|  |  |   |  | |/  /|  |\    /|  |  | |      | |
+;     /  ___   |  |   |  |    / |  | \  / |  |  | |      | |
+;    /  /   |  |  |__/  /    /  |  |  \/  |  |  |  ------  |
+;   /__/    |__|_______/|___/   |__|      |__|  | _+_ o o  |
 ;        Audio Driver for (dreamcast) VMu       |  +   O O |
 ;                         jvsTSX  /  2023        --______--
 ; ///////////////////////////////////////////////////////////////
@@ -15,16 +15,28 @@
 ;
 ;	port of ADPM for dreamcast VMU - cut down to fit for 133KHz apps
 ;		features:
+;
+;		version 1.0
 ;		- timeline and phrase format like trackers
 ;		- length encoded notes for better space usage
 ;		- General purpose Macro (Gmacro)
-;		- Sound effects sub-driver
 ;		- delayed "off-grid" note support
 ;		- F-0 to C#4 frequency range
 ;		- fixed notes on Gmacro for drums
 ;		- 5-bit pulse widths ranging from super thin to square
+;		- Sound effects sub-driver included (you can optionally replace it)
 ;
-;	size: 1168 bytes
+;		version 1.1 
+;		- groove table
+;
+;	performance:
+;		- RAM usage				: 34 bytes music, 6 bytes SFX
+;		- CPU usage				: ~550 cycles worst ever case*
+;		- Flash usage (driver)  : 1187 bytes
+;		- Flash usage (song)    : 2-4 bytes per note, most other commands are 2 bytes
+;
+;	*worst ever = 7 commands on Block B at once, everything enabled on Block A (and firing)
+
 
 
 ;    /////////////////////////////////////////////////////////////
@@ -32,13 +44,17 @@
 ;  /////////////////////////////////////////////////////////////
 ADVM_SETUP:
 	xor ACC
+	st ADVMRAM_OffsetNote
+	st ADVMRAM_Flags
 	ldc
 	st ADVMRAM_TmLineLocalLow
+	st ADVMRAM_TmLinePosLow
 	mov #1, ACC
 	st ADVMRAM_TickCount
 	st ADVMRAM_WaitCount
 	ldc
 	st ADVMRAM_TmLineLocalHigh
+	st ADVMRAM_TmLinePosHigh
 	mov #2, ACC
 	ldc
 	st ADVMRAM_PhraseLocalLow
@@ -53,19 +69,16 @@ ADVM_SETUP:
 	st ADVMRAM_GmacroLocalHigh
 	mov #6, ACC
 	ldc
-	st ADVMRAM_TickPreset
+	st ADVMRAM_GrooveTableLocalLow
+	mov #7, ACC
+	ldc
+	st ADVMRAM_GrooveTableLocalHigh
+	mov #8, ACC
+	ldc
+	st ADVMRAM_GroovePos
 	
-	xor ACC
-	st ADVMRAM_OffsetNote
-	st ADVMRAM_Flags
 	mov #$FF, ADVMRAM_SFXoverlay
 	mov #$FF, ADVMRAM_FixedFreq
-
-
-	ld ADVMRAM_TmLineLocalLow
-	st ADVMRAM_TmLinePosLow	
-	ld ADVMRAM_TmLineLocalHigh
-	st ADVMRAM_TmLinePosHigh
 
 	; reference and get new transpose
 	ld ADVMRAM_TmLinePosLow
@@ -98,9 +111,9 @@ ADVM_SETUP:
 	; add the index local with offset*2 value, then reference it and store into phrase pos
 	ld B
 	add ACC ; *2 the offset
-  bn PSW, 7, ADVM_SetupNoCarry
+  bn PSW, 7, .NoCarry
 	inc TRH ; in case the 8th bit becomes 9th in the *2 process
-ADVM_SetupNoCarry:
+.NoCarry:
 	st B
 	ldc 
 	st ADVMRAM_PhrasePosLow
@@ -140,10 +153,7 @@ ADVMSFX_RUN:
 	ldc
 	st ADVMSFX_PosLow
 	ld B
-	add #1
-  bn PSW, 7, .AlsoNoCarry
-	inc TRH
-.AlsoNoCarry:
+	inc ACC
 	ldc
 	st ADVMSFX_PosHigh
 	mov #1, ADVMSFX_Wait ; avoid locking the song out for 255 ticks
@@ -179,8 +189,7 @@ ADVMSFX_RUN:
 	st ADVMSFX_Duty
 .NoDuty:
 
-	; check for wait field
-	xor ACC
+	xor ACC ; check for wait field
   bn B, 5, .WaitIsOne
 	inc C
 	ld C
@@ -189,8 +198,7 @@ ADVMSFX_RUN:
 	inc ACC
 	st ADVMSFX_Wait
 	
-	; step SFX position
-	inc C
+	inc C ; step SFX position
 	ld C
 	add TRL
   bn PSW, 7, .NoCarry2
@@ -200,8 +208,7 @@ ADVMSFX_RUN:
 	ld TRH
 	st ADVMSFX_PosHigh
 
-	; calculate duty
-	ld ADVMSFX_Duty
+	ld ADVMSFX_Duty ; calculate duty
   be #$1F, .Mute
 	st B
 	ld T1LR
@@ -227,32 +234,38 @@ ADVMSFX_RUN:
 
 
 
-;	HOW TO SETUP LIST LOCAL
-;	just write this
-;		mov #<yoursfxlist, ADVMSFX_ListLocalLow
-;		mov #>yoursfxlist, ADVMSFX_ListLocalHigh
-;	MAKING SURE THE LABEL IS THE LIST, NOT INDIVIDUAL SFX TRACKS
+
+
+; hello
+;     there
+;         this
+;              is
+;                 pro
+;                     crastination
 ;
+;                        |\
+;                        | \
+;       ___              |  |\              ___
+;     -    -             /  | \            -   -
+;    /      \         _-=      |__        /      \
+;   |    _   \    _ /          /  \ _    /   _    |
+;   |   / \   | _/                   \_ |   / \   |
+;   |   |  |  |/   _--           --_   \|  |  |   |
+;   |   |  |  /   /   |         |   \   \  |  |   |
+;    \   \_| |  /  =_  \       /  _=  \  | |_/   /
+;     \     |  |  || \  |     |  / ||  | |      /
+;        ---|  |  || v|  \___/  |v ||  |  |---
+;  ---_____/   |  \ --|   "="   |-- /  |   \____---
+;   \_          \  ---     _     ---  /         _/
+;     -__         \_      / \      _/        __-
+;        --_____    ---_________---   _____--
+;         --_______/\             /\______--
+;                     \  \     /
+;                       ||__--
 ;
+;      and also a space between code to not let my dumb ass get lost in the source
 ;
-;	ADVM SFX SUBDRIVER DIRECTORY:
-;	Flash(data) <- Flash(index list) 
-;
-;
-;
-;	ADVM SFX SUBDRIVER FORMAT:
-;	very similar to Gmacro but M bit doesn't exist, it's T1LR value directly
-;		APWDDDDD PPPPPPPP WWWWWWWW
-;		|||||||| |||||||| ||||||||
-;		|||||||| |||||||| ++++++++--- wait
-;		|||||||| ++++++++------------ T1 pitch
-;		|||+++++--------------------- duty (1E = ignore; 1F = mute)
-;		||+-------------------------- Wait field request
-;		|+--------------------------- Pitch field request
-;		+---------------------------- Action bit
-;
-;	if A is 0
-;		end SFX and re-enable main sound, all other bits disregarded
+;	... if you're looking for SFX subdriver docs, it's moved to the DOCUMENTATION section
 
 
 
@@ -272,7 +285,7 @@ ADVM_RUN:
 	clr1 ADVMRAM_Flags, 2 ; disable Gmacro
 	mov #$FF, ADVMRAM_FixedFreq
 	mov #$1F, ADVMRAM_CurrDuty ; mute channel
-.SkipKill:
+.SkipKill: ; 12 cycles
 
 
 ; ////////////////// Delay count //////
@@ -314,7 +327,7 @@ ADVM_RUN:
 	
 	ld ADVMRAM_LastGmacro ; check Gmacro number, FF = off
 	clr1 ADVMRAM_Flags, 2
-	be #$FF, .SkipGmacro
+	be #$FF, .SkipDelay
 	set1 ADVMRAM_Flags, 2
 	
 	add ACC
@@ -325,14 +338,10 @@ ADVM_RUN:
 	ldc 
 	st ADVMRAM_GmacroPosLow
 	ld B
-	add #1
-  bn PSW, 7, .AlsoNoCarry
-	inc TRH
-.AlsoNoCarry:
+	inc ACC
 	ldc
 	st ADVMRAM_GmacroPosHigh
-.SkipGmacro:
-.SkipDelay:
+.SkipDelay: ; 47 cycles
 
 
 
@@ -398,27 +407,22 @@ ADVM_Gmacro:
 	inc C
   br .Step
 	
-	
-	
 .EndOrLoopMacro:
   bn ACC, 6, .BlockIsLoop
 	clr1 ADVMRAM_Flags, 2 ; disable Gmacro
   br .SkipGmacro
 	
 .BlockIsLoop:
-	mov #1, ACC
+	inc ACC ; previous ACC = 0
 	st ADVMRAM_GmacroWait ; reload wait so the macro don't softlock
 	ldc ; grab offset
 	st B ; important: the subtraction order DOES matter, TRL - B = good, B - TRL = bad
 	ld TRL
 	sub B
-  bn PSW, 7, .NoBorrow
-	dec TRH
+  bn PSW, 7, .NoCarry ; ^ really dumb dev note
+	dec TRH           ; imagine not knowing basic maths
 .NoBorrow
-  br .NoCarry
-
-
-
+  br .NoCarry         ; right???
 
 .Step:
 	ld C
@@ -429,19 +433,18 @@ ADVM_Gmacro:
 	st ADVMRAM_GmacroPosLow
 	ld TRH
 	st ADVMRAM_GmacroPosHigh
-.SkipGmacro:
+.SkipGmacro: ; 58 cycles worst
 
 
-
-
-	; check SFX status
-	ld ADVMRAM_SFXoverlay
-  be #$FE, ADVM_EXIT
 
 ;    /////////////////////////////////////////////////////////////
 ;   ///                      PITCH PIPE                       ///
 ;  /////////////////////////////////////////////////////////////
 ADVM_PitchPipe:
+	; check SFX status
+	ld ADVMRAM_SFXoverlay
+  be #$FE, ADVM_TickCounter
+
 	mov #<ADVM_NoteLut, TRL
 	mov #>ADVM_NoteLut, TRH
 	ld ADVMRAM_FixedFreq
@@ -453,6 +456,11 @@ ADVM_PitchPipe:
 	st C
 	ld ADVMRAM_DutyOverlay
   br .DutyCalc
+	
+.Mute:
+	mov #$FF, T1LR
+	mov #$FF, T1LC
+  br ADVM_TickCounter
 	
 .RunPipe:
 	; get note index
@@ -468,7 +476,7 @@ ADVM_PitchPipe:
 	st C
 	ld ADVMRAM_CurrDuty
 .DutyCalc:
-  be #$1F, ADVM_PitchPipeMute
+  be #$1F, .Mute
 	
 	st B
 	xor ACC
@@ -478,41 +486,44 @@ ADVM_PitchPipe:
 	ld C
 	xor #$FF ; flip it back and store at T1 Compare data
 	st T1LC 
-	
+	; 42 cycles full run
+
+
+
 ;    /////////////////////////////////////////////////////////////
-;   ///              DRIVER BLOCK B TICK COUNTER              ///
+;   ///                    DRIVER BLOCK B                     ///
 ;  /////////////////////////////////////////////////////////////
 ADVM_TickCounter:
 	dec ADVMRAM_TickCount
 	ld ADVMRAM_TickCount
-  bz ADVM_DriverBlkB
-	
-ADVM_EXIT:
-  ret
+  bnz ADVM_EXIT
+	; groove step
+	ld ADVMRAM_GrooveTableLocalLow
+	st TRL
+	ld ADVMRAM_GrooveTableLocalHigh
+	st TRH
+	ld ADVMRAM_GroovePos
+	ldc
+  be #$FF, .endgroove
+  br .end
+.endgroove: ; groove reset
+	ld ADVMRAM_GroovePos
+	inc ACC ; get next byte
+	ldc
+	add ADVMRAM_GroovePos
+	st ADVMRAM_GroovePos
+	ldc 
+.end:
+	inc ADVMRAM_GroovePos
+	st ADVMRAM_TickCount
 
-ADVM_PitchPipeMute:
-	mov #$FF, T1LR
-	mov #$FF, T1LC
-  br ADVM_TickCounter
-
-
-
-
-	
-;    /////////////////////////////////////////////////////////////
-;   ///                    DRIVER BLOCK B                     ///
-;  /////////////////////////////////////////////////////////////
-ADVM_DriverBlkB:
-	ld ADVMRAM_TickPreset ; reload tick count
-	st ADVMRAM_TickCount	
-	
 	dec ADVMRAM_WaitCount ; check rest count
 	ld ADVMRAM_WaitCount
   bnz ADVM_EXIT
 	
 	clr1 ADVMRAM_Flags, 7 ; clear continuity flag
+	; 11 cycles
 	
-; command grab procedure: PC = [ byte[PhrasePos]&11100000 4>> + CMDlist ]
 	; reference current phrase position
 ADVM_NextCMDfull:
 	ld ADVMRAM_PhrasePosLow
@@ -523,30 +534,51 @@ ADVM_NextCMD:
 	xor ACC
 	ldc
 	st C ; store it for later, low 5 bits might be useful
-	
-	; process the current command
-	and #%11100000 ; mask off LSB to only expose the command number
-	ror ; rotate untill the 3-bit MSB are at bits 3-1
-	ror
-	ror
-	ror
-	
-	; grab command from the CMD table and jump to command code
-	mov #<ADVM_CMDlist, TRL
-	mov #>ADVM_CMDlist, TRH
-	st B
+	mov #1, ACC
 	ldc
-	push ACC
-	ld B
-	inc ACC
-	ldc
-	push ACC
+
+  bp C, 7, .LowerHalf
+  bp C, 6, .TopLowQuarter
+  bp C, 5, .CmdIsEnd		; 00-
+  jmpf ADVMCMD_PlayNote
+.CmdIsEnd:
+  jmpf ADVMCMD_EndEvent
+
+.TopLowQuarter:				; 01-
+  bp C, 5, .CmdIsKill
+  jmpf ADVMCMD_Wait
+.CmdIsKill:
+  jmpf ADVMCMD_KillNote
+
+.LowerHalf:
+  bp C, 6, .LowerLowQuarter
+  bp C, 5, .CommandIsGmacro
+  jmpf ADVMCMD_DelayNote 	; 10-
+.CommandIsGmacro:
+  jmpf ADVMCMD_RunGmacro
+
+.LowerLowQuarter: 			; 11-
+  bp C, 5, .CmdIsSpeed
+  jmpf ADVMCMD_SetDuty
+.CmdIsSpeed:
+  jmpf ADVMCMD_SetSpeed
+
+	; 31 cycles any case (     full, first run     )
+	; 20 cycles any case (  from end event command )
+	; 25 cycles any case ( when returning from CMD )
+
+;	PlayNote 		000 2-4 bytes
+;	EndEvent		001 1-2 bytes
+;	Wait			010 1-2 bytes
+;	KillNote		011  2  bytes
+;	DelayNote		100 3-4 bytes
+;	RunGmacro		101  2  bytes
+;	SetDuty			110  1  byte
+;	SetSpeed		111  2  bytes
+
+
+ADVM_EXIT:
   ret
-	
-	; now this might get complicated but the way it works is
-	; since there is no such thing as 'JMP TR' i'm grabbing the location 
-	; from TR and then pushing it into the stack like a CALL would do
-	; so once i run RET it POPs the location into PC
 
 ADVM_CMDreturn: ; return the byte skip amount in ACC	
 	; offset phrase position by last command's size to fetch next command
@@ -562,16 +594,6 @@ ADVM_CMDreturn: ; return the byte skip amount in ACC
 ;    /////////////////////////////////////////////////////////////
 ;   ///                    LIBRARY SPACE                      ///
 ;  /////////////////////////////////////////////////////////////
-ADVM_CMDlist:
-	.word ADVMCMD_PlayNote
-	.word ADVMCMD_EndEvent
-	.word ADVMCMD_Wait
-	.word ADVMCMD_KillNote
-	.word ADVMCMD_DelayNote
-	.word ADVMCMD_RunGmacro
-	.word ADVMCMD_SetDuty
-	.word ADVMCMD_SetSpeed
-
 ADVM_NoteLut:
 	.byte $06 ; F-0   00
 	.byte $14 ; F#0   01
@@ -632,8 +654,10 @@ ADVMCMD_PlayNote: ; ///////////////////////////////////// PLAY NOTE ///
 	not1 ADVMRAM_Flags, 7
   bn ADVMRAM_Flags, 7, .ContinuityZero
 
-	; update transpose
-	ld ADVMRAM_TransposePend
+	st B ; note index
+	and #%00111111
+	st ADVMRAM_CurrentNote
+	ld ADVMRAM_TransposePend	; update transpose
 	st ADVMRAM_TransposeCurr
 	
 	; get wait count
@@ -642,19 +666,12 @@ ADVMCMD_PlayNote: ; ///////////////////////////////////// PLAY NOTE ///
 	inc ACC
 	st ADVMRAM_WaitCount
 	
-	; get note index
+  bp C, 4, .NoteIsLegato ; if the note is a legato note, it will ignore the other two params
+	mov #1, C
 	ld ADVMRAM_PhrasePosLow
 	st TRL
 	ld ADVMRAM_PhrasePosHigh
 	st TRH
-	mov #1, ACC
-	ldc
-	st B
-	and #%00111111
-	st ADVMRAM_CurrentNote
-	
-  bp C, 4, .NoteIsLegato ; if the note is a legato note, it will ignore the other two params
-	mov #1, C
 	
 	; grab duty parameter
   bn B, 6, .ReuseDuty
@@ -700,17 +717,14 @@ ADVMCMD_PlayNote: ; ///////////////////////////////////// PLAY NOTE ///
 	ldc 
 	st ADVMRAM_GmacroPosLow
 	ld B
-	add #1
-  bn PSW, 7, .AlsoNoCarry
-	inc TRH
-.AlsoNoCarry:
+	inc ACC
 	ldc
 	st ADVMRAM_GmacroPosHigh
 .SkipGmacro
 	
 	inc C
 	ld C
-  jmpf ADVM_CMDreturn
+  jmpf ADVM_CMDreturn ; 62 cycles worst
 
 .ContinuityZero:
   ret
@@ -729,14 +743,7 @@ ADVMCMD_EndEvent: ; ///////////////////////////////////// END EVENT ///
 
   bp C, 0, ADVM_CommandIsEndPhrase
 	
-	; if it comes down here it's END SONG
-	ld ADVMRAM_PhrasePosLow ; get offset byte
-	st TRL
-	ld ADVMRAM_PhrasePosHigh
-	st TRH
-	mov #1, ACC
-	ldc
-
+;	; if it comes down here it's END SONG
 	add ACC ; *2 the offset value
 	mov #0, B ; use B to store the *2 carry if it happens (offset greater than 127)
   bn PSW, 7, ADVM_EndSongNoCarry
@@ -792,7 +799,7 @@ ADVM_EndEvntNoCarry:
 	inc ACC
 	ldc 
 	st ADVMRAM_PhrasePosHigh	
-  jmpf ADVM_NextCMDfull
+  jmpf ADVM_NextCMDfull ; end phrase = 41 cycles, end song = 52 cycles 
 
 
 
@@ -800,6 +807,7 @@ ADVMCMD_Wait: ; ///////////////////////////////////////// WAIT STEPS ///
 	not1 ADVMRAM_Flags, 7
   bn ADVMRAM_Flags, 7, .ContinuityZero
 
+	st B
 	ld C
   be #%01011111, .TwoBytes
 	
@@ -809,20 +817,15 @@ ADVMCMD_Wait: ; ///////////////////////////////////////// WAIT STEPS ///
 	st ADVMRAM_WaitCount
 	
 	mov #1, ACC
-  jmpf ADVM_CMDreturn
+  jmpf ADVM_CMDreturn ; 14 cycles
 
 .TwoBytes:
-	ld ADVMRAM_PhrasePosLow
-	st TRL
-	ld ADVMRAM_PhrasePosHigh
-	st TRH
-	mov #1, ACC
-	ldc
+	ld B
 	inc ACC
 	st ADVMRAM_WaitCount
 	
 	mov #2, ACC
-  jmpf ADVM_CMDreturn
+  jmpf ADVM_CMDreturn ; 14 cycles
 
 .ContinuityZero:
   ret
@@ -830,39 +833,31 @@ ADVMCMD_Wait: ; ///////////////////////////////////////// WAIT STEPS ///
 
 
 ADVMCMD_KillNote: ; ///////////////////////////////////// KILL NOTE ///
-	ld ADVMRAM_PhrasePosLow
-	st TRL
-	ld ADVMRAM_PhrasePosHigh
-	st TRH
-	mov #1, ACC
-	ldc
 	inc ACC
 	st ADVMRAM_KillCount
 	set1 ADVMRAM_Flags, 0
 	mov #2, ACC
-  jmpf ADVM_CMDreturn
+  jmpf ADVM_CMDreturn ; 7 cycles
 
 
 
 ADVMCMD_DelayNote: ; //////////////////////////////////// DELAYED NOTE ///
+	st ADVMRAM_PendingNote ; store note index
 	ld C
-	st ADVMRAM_PendingDuty
+	st ADVMRAM_PendingDuty ; store duty
 	
-	ld ADVMRAM_PhrasePosLow
+	ld ADVMRAM_PhrasePosLow ; setup TR to grab wait
 	st TRL
 	ld ADVMRAM_PhrasePosHigh
 	st TRH
-	mov #1, ACC
-	ldc
-	st ADVMRAM_PendingNote
-	
-	mov #2, ACC
+
+	mov #2, ACC ; grab wait
 	ldc
 	inc ACC
 	st ADVMRAM_DelayCount
 	
 	mov #3, C
-  bn ADVMRAM_PendingNote, 7, .NoGmacro
+  bn ADVMRAM_PendingNote, 7, .NoGmacro ; grab Gmacro or else 3-byte command
 	ld C
 	inc C
 	ldc
@@ -871,18 +866,12 @@ ADVMCMD_DelayNote: ; //////////////////////////////////// DELAYED NOTE ///
 .NoGmacro:
 	set1 ADVMRAM_Flags, 1
 	ld C
-  jmpf ADVM_CMDreturn
+  jmpf ADVM_CMDreturn ; 24 cycles (worst)
 
 
 
 ADVMCMD_RunGmacro: ; //////////////////////////////////// RUN GMACRO ///
 	mov #1, ADVMRAM_GmacroWait
-	ld ADVMRAM_PhrasePosLow
-	st TRL
-	ld ADVMRAM_PhrasePosHigh
-	st TRH
-	mov #1, ACC
-	ldc
 	st B
 	
 	ld ADVMRAM_GmacroLocalLow
@@ -903,16 +892,13 @@ ADVMCMD_RunGmacro: ; //////////////////////////////////// RUN GMACRO ///
 	ldc 
 	st ADVMRAM_GmacroPosLow
 	ld B
-	add #1
-  bn PSW, 7, .AlsoNoCarry
-	inc TRH
-.AlsoNoCarry:
+	inc ACC
 	ldc
 	st ADVMRAM_GmacroPosHigh
 .SkipGmacro
 
 	mov #2, ACC
-  jmpf ADVM_CMDreturn
+  jmpf ADVM_CMDreturn ; 29 cycles worst
 
 
 
@@ -921,38 +907,68 @@ ADVMCMD_SetDuty: ; ////////////////////////////////////// SET DUTY ///
 	and #%00011111
 	st ADVMRAM_CurrDuty
 	mov #1, ACC
-  jmpf ADVM_CMDreturn
+  jmpf ADVM_CMDreturn ; 7 cycles
 
 
 
 ADVMCMD_SetSpeed: ; ///////////////////////////////////// SET SPEED ///
-	ld ADVMRAM_PhrasePosLow
+  bp C, 2, .SpeedIsTempo
+	st ADVMRAM_GroovePos
+	
+	ld ADVMRAM_GrooveTableLocalLow
 	st TRL
-	ld ADVMRAM_PhrasePosHigh
+	ld ADVMRAM_GrooveTableLocalHigh
 	st TRH
-	mov #1, ACC
+	ld ADVMRAM_GroovePos
 	ldc
-	inc ACC
-	st ADVMRAM_TickPreset
+  be #$FF, .endgroove
+  br .end
+	
+.endgroove:
+	ld ADVMRAM_GroovePos
+	inc ACC ; get next byte
+	ldc
+	add ADVMRAM_GroovePos
+	st ADVMRAM_GroovePos
+	ldc 
+.end:
+	inc ADVMRAM_GroovePos
 	st ADVMRAM_TickCount
+	
 	mov #2, ACC
-  jmpf ADVM_CMDreturn
+  jmpf ADVM_CMDreturn ; 25 cycles
 
+.SpeedIsTempo:
+  bp C, 1, .Timer1
+  bp C, 0, .T0High
+	st T0LR
+	mov #2, ACC
+  jmpf ADVM_CMDreturn ; 11 cycles
+
+.T0High:
+	st T0HR
+	mov #2, ACC
+  jmpf ADVM_CMDreturn ; 11 cycles
+
+.Timer1:
+	st T1HR
+	mov #2, ACC
+  jmpf ADVM_CMDreturn ; 9 cycles
 
 
 ;    /////////////////////////////////////////////////////////////
 ;   ///                    RAM DEFINITIONS                    ///
 ;  /////////////////////////////////////////////////////////////
 
-; ADVM_MUSIC RAM USAGE: 32 bytes
+; ADVM_MUSIC RAM USAGE: 34 bytes
 
 ; Block A
 ADVMRAM_KillCount =		$04
 ADVMRAM_DelayCount =	$05
 ADVMRAM_PendingNote =   $06
 ADVMRAM_PendingGmacro = $07
-ADVMRAM_PendingDuty =   $08 ; todo: check what's wrong with Gmacro
-ADVMRAM_GmacroPosLow =	$09 ; RAM editor's LSBs: 9 A B
+ADVMRAM_PendingDuty =   $08
+ADVMRAM_GmacroPosLow =	$09
 ADVMRAM_GmacroPosHigh =	$0A
 ADVMRAM_GmacroWait = 	$0B
 ADVMRAM_CurrentNote =	$0C
@@ -963,7 +979,7 @@ ADVMRAM_FixedFreq =     $10
 ADVMRAM_DutyOverlay =   $11
 ADVMRAM_SFXoverlay =    $12
 ADVMRAM_TickCount =     $13
-ADVMRAM_TickPreset =    $14
+ADVMRAM_GroovePos =		$14
 
 ; Block B
 ADVMRAM_WaitCount =		$15
@@ -977,29 +993,33 @@ ADVMRAM_TmLinePosLow =	$1C
 ADVMRAM_TmLinePosHigh =	$1D
 
 ; Position Block
-ADVMRAM_TmLineLocalLow =	$1E
-ADVMRAM_TmLineLocalHigh	=	$1F
-ADVMRAM_PhraseLocalLow =	$20
-ADVMRAM_PhraseLocalHigh	=	$21
-ADVMRAM_GmacroLocalLow =	$22
-ADVMRAM_GmacroLocalHigh	=	$23
+ADVMRAM_TmLineLocalLow =		$1E
+ADVMRAM_TmLineLocalHigh	=		$1F
+ADVMRAM_PhraseLocalLow =		$20
+ADVMRAM_PhraseLocalHigh	=		$21
+ADVMRAM_GmacroLocalLow =		$22
+ADVMRAM_GmacroLocalHigh	=		$23
+ADVMRAM_GrooveTableLocalLow =   $24
+ADVMRAM_GrooveTableLocalHigh =  $25
 
 ; SFX SUB-Engine block
 ; ADVM_SFX RAM USAGE: 6 bytes
-ADVMSFX_ListLocalLow =  $24
-ADVMSFX_ListLocalHigh = $25
-ADVMSFX_Wait =			$26
-ADVMSFX_PosLow = 		$27
-ADVMSFX_PosHigh = 		$28
-ADVMSFX_Duty =			$29
+ADVMSFX_ListLocalLow =  $26
+ADVMSFX_ListLocalHigh = $27
+ADVMSFX_Wait =			$28
+ADVMSFX_PosLow = 		$29
+ADVMSFX_PosHigh = 		$2A
+ADVMSFX_Duty =			$2B
 
-; TOTAL: 38 bytes or a little over 1/8 of the user arythmetic RAM
+; TOTAL: 40 bytes or a little over 1/8 of the user arythmetic RAM
 
 
 
-;   //////////////////////////////////////
-;  //          DOCUMENTATION           //
-; //////////////////////////////////////
+
+
+;    /////////////////////////////////////////////////////////////
+;   ///                    DOCUMENTATION                      ///
+;  /////////////////////////////////////////////////////////////
 ;
 ; ////////////////////// COMMANDS' FORMAT ///
 ;
@@ -1123,7 +1143,8 @@ ADVMSFX_Duty =			$29
 ;		.word	time line location, tells where the time line data starts at 
 ;		.word	phrase index table location, tells where the list of Phrase locations is on Flash
 ;		.word	Gmacro index table location, tells where the list of Gmacro locations is on Flash
-;		.byte	Tick wait parameter (it's incremented by 1 before being loaded)
+;		.word	Groove table location, tells where the groove table is on Flash
+;		.byte	Groove table start position
 ;
 ;
 ;	the driver setup code copies these words into the Position block of RAM (and the last byte into TickPreset)
@@ -1153,3 +1174,51 @@ ADVMSFX_Duty =			$29
 ;		SFXoverlay variable: 00-FC: new SFX pending, $FE: SFX being processed, $FF: no SFX running
 ;		FixedFreq variable:  00-FE: fixed T1 reload to play and ignore pitch pipe, FF: no pitch, run normally
 ;			if this variable is 00-FE the value at DutyOverlay variable is used, otherwise it's ignored
+;
+;
+;
+; ////////////////////// GROOVE TABLE ///
+;	
+;	the groove is a sequence of numbers to be used with the Block B tick counter, it affects the speed of the song
+;	for example, a groove table that alternates between waiting 4 and 6 ticks will create a swing tempo
+;
+;	in order to use the groove table just specify its start position in the song's header
+;	you can change the position within the groove table using comand 7 (SetSpeed) with the lower bits cleared
+;
+;	to tell the Tick counter to go back to a previous point you have to write $FF to mark an offset event
+;	then the Tick counter will grab the next byte and add to its 8-bit position
+;	this also means it overflows, so if you want to go back, all you have to do is to type a reaaally big number
+;	like $FF to return one entry, $FE to return two, $FD to return three and so on...
+;
+;	maybe add an example song that shows this better... todo?
+;
+;
+;
+; /////////////////////// SFX SUBDRIVER ///
+;
+;	HOW TO SETUP LIST LOCAL
+;	just write this
+;		mov #<yoursfxlist, ADVMSFX_ListLocalLow
+;		mov #>yoursfxlist, ADVMSFX_ListLocalHigh
+;	MAKING SURE THE LABEL IS THE LIST, NOT INDIVIDUAL SFX TRACKS
+;
+;
+;
+;	ADVM SFX SUBDRIVER DIRECTORY:
+;	Flash(data) <- Flash(index list) 
+;
+;
+;
+;	ADVM SFX SUBDRIVER FORMAT:
+;	very similar to Gmacro but M bit doesn't exist, it's T1LR value directly
+;		APWDDDDD PPPPPPPP WWWWWWWW
+;		|||||||| |||||||| ||||||||
+;		|||||||| |||||||| ++++++++--- wait
+;		|||||||| ++++++++------------ T1 pitch
+;		|||+++++--------------------- duty (1E = ignore; 1F = mute)
+;		||+-------------------------- Wait field request
+;		|+--------------------------- Pitch field request
+;		+---------------------------- Action bit
+;
+;	if A is 0
+;		end SFX and re-enable main sound, all other bits disregarded
