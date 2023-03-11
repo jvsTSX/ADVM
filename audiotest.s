@@ -23,9 +23,9 @@
 
 
  	.org $1F0 ; exit app mode
-goodbye:	
+GoodBye:	
 	not1 EXT, 0
-  jmpf goodbye
+  jmpf GoodBye
 
 
 
@@ -54,9 +54,9 @@ Start:
 	
 	; setup T0
 	mov #%01000001, T0CON ; Low running, int enabled
-	mov #0, T0PRR
+	mov #$A0, T0PRR
 	mov #1, T0L
-	mov #$DF, T0LR
+	mov #$BF, T0LR
 	
 	; i don't know what these do but they enable T1 to output audio to P1
 	mov #$80, P1FCR
@@ -169,7 +169,7 @@ SONGDATA_0:
 	.byte 0 ; groove table start pos
 
 GrooveTable:
-	.byte 04
+	.byte $04
 	.byte $FF, $FF
 	.byte 02
 	.byte $FF, $FF
