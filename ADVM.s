@@ -31,11 +31,11 @@
 ;
 ;	performance:
 ;		- RAM usage				: 34 bytes music, 6 bytes SFX
-;		- CPU usage				: ~550 cycles worst ever case*
-;		- Flash usage (driver)  : 1187 bytes
+;		- CPU usage				: ~568 cycles worst ever case*
+;		- Flash usage (driver)  : 1185 bytes
 ;		- Flash usage (song)    : 2-4 bytes per note, most other commands are 2 bytes
 ;
-;	*worst ever = 7 commands on Block B at once, everything enabled on Block A (and firing)
+;	*worst ever = 7 commands on Block B at once, everything enabled on Block A (and firing) with Gmacro running into a valid loop
 
 
 
@@ -349,7 +349,7 @@ ADVM_RUN:
 ;   ///                    GMACRO HANDLER                     ///
 ;  /////////////////////////////////////////////////////////////
 ADVM_Gmacro:
-  bn ADVMRAM_Flags, 2, .SkipGmacro
+  bn ADVMRAM_Flags, 2, .GmacroDisabled
 	
 	dec ADVMRAM_GmacroWait
 	ld ADVMRAM_GmacroWait
@@ -364,9 +364,30 @@ ADVM_Gmacro:
 	xor ACC
 	st C
 	ldc
-  bn ACC, 7, .EndOrLoopMacro
-	; otherwise action macro
+.Process:
+  bp ACC, 7, .Action
+
+	; otherwise end/loop
+  bp ACC, 6, .Stop
+	inc ACC ; previous ACC = 0
+	st ADVMRAM_GmacroWait ; reload wait so the macro don't softlock
+	ldc ; grab offset
+	st B ; important: the subtraction order DOES matter, TRL - B = good, B - TRL = bad
+	ld TRL
+	sub B
+  bn PSW, 7, .NoBorrow ; ^ really dumb dev note
+	dec TRH           ; imagine not knowing basic maths
+.NoBorrow:
+	st TRL
+	xor ACC
+	ldc
+  bnz .Process
+.Stop:
+	clr1 ADVMRAM_Flags, 2 ; disable Gmacro
+.GmacroDisabled:
+  br .SkipGmacro
 	
+.Action:
 	; pitch and duty
 	st B
   bn B, 6, .RelModeDutyCheck
@@ -405,26 +426,6 @@ ADVM_Gmacro:
 	inc ACC
 	st ADVMRAM_GmacroWait
 	inc C
-  br .Step
-	
-.EndOrLoopMacro:
-  bn ACC, 6, .BlockIsLoop
-	clr1 ADVMRAM_Flags, 2 ; disable Gmacro
-  br .SkipGmacro
-	
-.BlockIsLoop:
-	inc ACC ; previous ACC = 0
-	st ADVMRAM_GmacroWait ; reload wait so the macro don't softlock
-	ldc ; grab offset
-	st B ; important: the subtraction order DOES matter, TRL - B = good, B - TRL = bad
-	ld TRL
-	sub B
-  bn PSW, 7, .NoCarry ; ^ really dumb dev note
-	dec TRH           ; imagine not knowing basic maths
-.NoBorrow
-  br .NoCarry         ; right???
-
-.Step:
 	ld C
 	add TRL
   bn PSW, 7, .NoCarry
@@ -433,7 +434,7 @@ ADVM_Gmacro:
 	st ADVMRAM_GmacroPosLow
 	ld TRH
 	st ADVMRAM_GmacroPosHigh
-.SkipGmacro: ; 58 cycles worst
+.SkipGmacro: ; 76 cycles worst
 
 
 
